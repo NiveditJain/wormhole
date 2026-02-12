@@ -36,6 +36,26 @@ impl SessionState {
         }
     }
 
+    /// Create a session with an explicit ID (e.g. captured from Claude Code).
+    pub fn with_id(
+        id: String,
+        provider: ProviderKind,
+        model: Option<String>,
+        region: Option<String>,
+        fallback_providers: Vec<ProviderKind>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id,
+            provider,
+            model,
+            region,
+            fallback_providers,
+            created_at: now,
+            last_active: now,
+        }
+    }
+
     pub fn touch(&mut self) {
         self.last_active = Utc::now();
     }

@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use console::style;
 use dialoguer::{FuzzySelect, Select};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -34,7 +35,7 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
         }
     }
 
-    // Resolve provider and model
+    // Resolve provider and model (and whether we're resuming a previous session)
     let (provider_kind, resumed_session, selected_model) =
         resolve_provider_and_session(&args, &config, &session_store)?;
 
@@ -55,21 +56,6 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
     // Wrap with failover if configured
     let provider = maybe_wrap_failover(provider, &config).await;
 
-    // Create or resume session
-    let session = if let Some(s) = resumed_session {
-        session_store.touch(&s.id).ok();
-        s
-    } else {
-        let session = SessionState::new(
-            provider_kind,
-            model.clone(),
-            None,
-            config.failover.fallback_order.clone(),
-        );
-        session_store.create(&session)?;
-        session
-    };
-
     // Start proxy server
     let shutdown = CancellationToken::new();
     let state = Arc::new(
@@ -83,20 +69,42 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
         .context("Failed to start proxy server")?;
 
     // Print banner
-    print_banner(provider_kind, &session, actual_port, model.as_deref());
+    print_banner(provider_kind, actual_port, model.as_deref());
 
-    // Spawn Claude Code
+    // Spawn Claude Code, passing --resume if we're resuming a previous session
     let base_url = format!("http://127.0.0.1:{}", actual_port);
-    let exit_code = spawn_claude(&base_url, &args.claude_args).await?;
+    let resume_id = resumed_session.as_ref().map(|s| s.id.as_str());
+    let exit_code = spawn_claude(&base_url, &args.claude_args, resume_id).await?;
 
-    // Save session and shut down
-    session_store.touch(&session.id).ok();
+    // After Claude exits, capture its session ID and save wormhole session metadata
+    if let Some(claude_session_id) = find_claude_session_id() {
+        if resumed_session
+            .as_ref()
+            .map_or(true, |s| s.id != claude_session_id)
+        {
+            // New session — save provider/model metadata keyed by Claude's session ID
+            let session = SessionState::with_id(
+                claude_session_id,
+                provider_kind,
+                model.clone(),
+                None,
+                config.failover.fallback_order.clone(),
+            );
+            session_store.create(&session)?;
+            debug!("Session {} saved", session.short_id());
+        } else {
+            // Resumed session — just update last_active
+            session_store.touch(&claude_session_id).ok();
+            debug!("Session {} touched", &claude_session_id[..8]);
+        }
+    } else {
+        debug!("Could not detect Claude session ID");
+    }
+
     shutdown.cancel();
 
     // Give the server a moment to finish in-flight requests
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    debug!("Session {} saved, proxy shut down", session.short_id());
 
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -380,12 +388,7 @@ async fn maybe_wrap_failover(
     ))
 }
 
-fn print_banner(
-    provider: ProviderKind,
-    session: &SessionState,
-    port: u16,
-    model: Option<&str>,
-) {
+fn print_banner(provider: ProviderKind, port: u16, model: Option<&str>) {
     let divider = style("─".repeat(50)).dim();
     println!("{}", divider);
     println!(
@@ -393,14 +396,9 @@ fn print_banner(
         style("Provider:").bold(),
         style(provider.display_name()).cyan()
     );
-    if let Some(model) = model.or(session.model.as_deref()) {
+    if let Some(model) = model {
         println!("  {} {}", style("Model:").bold(), style(model).cyan());
     }
-    println!(
-        "  {} {}",
-        style("Session:").bold(),
-        style(session.short_id()).yellow()
-    );
     println!(
         "  {} http://127.0.0.1:{}",
         style("Proxy:").bold(),
@@ -410,7 +408,11 @@ fn print_banner(
     println!();
 }
 
-async fn spawn_claude(base_url: &str, extra_args: &[String]) -> Result<i32> {
+async fn spawn_claude(
+    base_url: &str,
+    extra_args: &[String],
+    resume_session_id: Option<&str>,
+) -> Result<i32> {
     info!("Spawning claude with ANTHROPIC_BASE_URL={}", base_url);
 
     let mut cmd = Command::new("claude");
@@ -419,6 +421,11 @@ async fn spawn_claude(base_url: &str, extra_args: &[String]) -> Result<i32> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+
+    // Forward --resume to Claude Code so it resumes its own session
+    if let Some(session_id) = resume_session_id {
+        cmd.arg("--resume").arg(session_id);
+    }
 
     for arg in extra_args {
         cmd.arg(arg);
@@ -430,4 +437,48 @@ async fn spawn_claude(base_url: &str, extra_args: &[String]) -> Result<i32> {
         .context("Failed to spawn claude. Is Claude Code installed?")?;
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// Scan Claude Code's session directory for the most recently modified session
+/// file and return its ID (the filename stem, a UUID).
+///
+/// Claude stores sessions at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`.
+fn find_claude_session_id() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let cwd = std::env::current_dir().ok()?;
+
+    // Claude encodes the cwd by replacing '/' with '-'
+    let encoded_cwd = cwd.to_string_lossy().replace('/', "-");
+    let sessions_dir = PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(&encoded_cwd);
+
+    let mut newest: Option<(String, std::time::SystemTime)> = None;
+
+    for entry in std::fs::read_dir(&sessions_dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+
+        // Only consider top-level .jsonl files (not subagent files in subdirs)
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                let name = path.file_stem()?.to_string_lossy().to_string();
+                if newest.as_ref().map_or(true, |(_, t)| modified > *t) {
+                    newest = Some((name, modified));
+                }
+            }
+        }
+    }
+
+    let (id, _) = newest?;
+    debug!("Detected Claude session ID: {}", id);
+    Some(id)
 }
