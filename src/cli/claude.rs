@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use console::style;
 use dialoguer::{FuzzySelect, Select};
 use std::path::PathBuf;
@@ -11,14 +11,10 @@ use tracing::{debug, info};
 use crate::cli::config_cmd::gather_and_save_credentials;
 use crate::cli::ClaudeArgs;
 use crate::config::credentials::resolve_credentials;
-use crate::config::types::ProviderCredentials;
 use crate::config::{load_config, WormholeConfig};
-use crate::provider::anthropic::AnthropicProvider;
-use crate::provider::bedrock::BedrockProvider;
+use crate::provider::builder::build_provider;
 use crate::provider::failover::FailoverProvider;
-use crate::provider::foundry::FoundryProvider;
 use crate::provider::model_map::available_models;
-use crate::provider::vertex::VertexProvider;
 use crate::provider::Provider;
 use crate::server::state::AppState;
 use crate::session::{SessionState, SessionStore};
@@ -339,27 +335,6 @@ fn interactive_model_select(provider: ProviderKind) -> Result<Option<String>> {
         .context("Model selection cancelled")?;
 
     Ok(Some(models[selection].0.to_string()))
-}
-
-fn build_provider(
-    kind: ProviderKind,
-    credentials: ProviderCredentials,
-) -> Result<Arc<dyn Provider>> {
-    match (kind, credentials) {
-        (ProviderKind::Anthropic, ProviderCredentials::Anthropic { api_key, base_url }) => {
-            Ok(Arc::new(AnthropicProvider::new(api_key, base_url)))
-        }
-        (ProviderKind::Bedrock, ProviderCredentials::Bedrock { region, credentials }) => {
-            Ok(Arc::new(BedrockProvider::new(credentials, region)))
-        }
-        (ProviderKind::Vertex, ProviderCredentials::Vertex { project_id, region, token }) => {
-            Ok(Arc::new(VertexProvider::new(project_id, region, token)))
-        }
-        (ProviderKind::Foundry, ProviderCredentials::Foundry { resource, api_key }) => {
-            Ok(Arc::new(FoundryProvider::new(resource, api_key)))
-        }
-        _ => bail!("Credential type mismatch"),
-    }
 }
 
 async fn maybe_wrap_failover(

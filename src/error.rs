@@ -50,16 +50,6 @@ impl ProviderError {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_retryable(&self) -> bool {
-        match self {
-            ProviderError::Upstream { status, .. } => {
-                matches!(status, 429 | 500 | 502 | 503 | 529)
-            }
-            ProviderError::Connection { .. } => true,
-            _ => false,
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -110,12 +100,11 @@ impl IntoResponse for AppError {
                 (status, error_type, e.to_string())
             }
             AppError::Session(e) => {
-                let status = match e {
-                    SessionError::NotFound(_) => StatusCode::NOT_FOUND,
-                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                let (status, error_type) = match e {
+                    SessionError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found_error"),
+                    _ => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
                 };
-                ("api_error", "api_error", e.to_string());
-                (status, "not_found_error", e.to_string())
+                (status, error_type, e.to_string())
             }
             AppError::Config(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "api_error", msg.clone())

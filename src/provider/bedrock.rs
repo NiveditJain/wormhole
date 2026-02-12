@@ -9,6 +9,7 @@ use tracing::debug;
 
 use crate::auth::aws::sign_request;
 use crate::error::ProviderError;
+use crate::provider::builder::http_client;
 use crate::provider::model_map::translate_model_id;
 use crate::provider::{Provider, SseByteStream};
 use crate::types::ProviderKind;
@@ -27,13 +28,7 @@ pub struct BedrockProvider {
 
 impl BedrockProvider {
     pub fn new(credentials: Credentials, region: String) -> Self {
-        let client = Client::builder()
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(32)
-            .tcp_nodelay(true)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = http_client();
 
         let host_header = format!("bedrock-runtime.{}.amazonaws.com", region);
         let base_url = format!("https://{}", host_header);
@@ -56,7 +51,7 @@ impl BedrockProvider {
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
 
-        let bedrock_model = translate_model_id(ProviderKind::Bedrock, &model);
+        let bedrock_model = translate_model_id(ProviderKind::Bedrock, &model).into_owned();
 
         // Remove stream field (endpoint determines streaming)
         obj.remove("stream");

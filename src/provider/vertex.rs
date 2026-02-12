@@ -7,6 +7,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::error::ProviderError;
+use crate::provider::builder::http_client;
 use crate::provider::model_map::translate_model_id;
 use crate::provider::{Provider, SseByteStream};
 use crate::types::ProviderKind;
@@ -15,10 +16,6 @@ const VERTEX_ANTHROPIC_VERSION: &str = "vertex-2023-10-16";
 
 pub struct VertexProvider {
     client: Client,
-    #[allow(dead_code)]
-    project_id: String,
-    #[allow(dead_code)]
-    region: String,
     token: SecretString,
     /// Pre-computed base URL
     base_url: String,
@@ -26,13 +23,7 @@ pub struct VertexProvider {
 
 impl VertexProvider {
     pub fn new(project_id: String, region: String, token: SecretString) -> Self {
-        let client = Client::builder()
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(32)
-            .tcp_nodelay(true)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = http_client();
 
         let base_url = format!(
             "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/anthropic",
@@ -41,8 +32,6 @@ impl VertexProvider {
 
         Self {
             client,
-            project_id,
-            region,
             token,
             base_url,
         }
@@ -57,7 +46,7 @@ impl VertexProvider {
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "claude-sonnet-4-5-20250929".to_string());
 
-        let vertex_model = translate_model_id(ProviderKind::Vertex, &model);
+        let vertex_model = translate_model_id(ProviderKind::Vertex, &model).into_owned();
 
         // Remove stream field (endpoint determines streaming)
         obj.remove("stream");

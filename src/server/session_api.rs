@@ -6,13 +6,9 @@ use std::sync::Arc;
 use tracing::debug;
 
 use crate::config::credentials::resolve_credentials;
-use crate::config::types::ProviderCredentials;
 use crate::error::AppError;
-use crate::provider::anthropic::AnthropicProvider;
-use crate::provider::bedrock::BedrockProvider;
+use crate::provider::builder::build_provider;
 use crate::provider::failover::FailoverProvider;
-use crate::provider::foundry::FoundryProvider;
-use crate::provider::vertex::VertexProvider;
 use crate::provider::Provider;
 use crate::server::state::AppState;
 use crate::session::types::SessionState;
@@ -50,7 +46,8 @@ pub async fn create_session(
         .await
         .map_err(|e| AppError::Config(e.to_string()))?;
 
-    let provider: Arc<dyn Provider> = build_provider(req.provider, credentials)?;
+    let provider: Arc<dyn Provider> = build_provider(req.provider, credentials)
+        .map_err(|e| AppError::Config(e.to_string()))?;
 
     // Wrap with failover if fallbacks are specified
     let provider = if let Some(ref fallback_kinds) = req.fallback_providers {
@@ -60,7 +57,8 @@ pub async fn create_session(
                 let creds = resolve_credentials(*kind, &state.config.providers)
                     .await
                     .map_err(|e| AppError::Config(e.to_string()))?;
-                let fb_provider = build_provider(*kind, creds)?;
+                let fb_provider = build_provider(*kind, creds)
+                    .map_err(|e| AppError::Config(e.to_string()))?;
                 fallbacks.push(fb_provider);
             }
 
@@ -158,26 +156,3 @@ pub async fn delete_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn build_provider(
-    kind: ProviderKind,
-    credentials: ProviderCredentials,
-) -> Result<Arc<dyn Provider>, AppError> {
-    match (kind, credentials) {
-        (ProviderKind::Anthropic, ProviderCredentials::Anthropic { api_key, base_url }) => {
-            Ok(Arc::new(AnthropicProvider::new(api_key, base_url)))
-        }
-        (ProviderKind::Bedrock, ProviderCredentials::Bedrock { region, credentials }) => {
-            Ok(Arc::new(BedrockProvider::new(credentials, region)))
-        }
-        (ProviderKind::Vertex, ProviderCredentials::Vertex { project_id, region, token }) => {
-            Ok(Arc::new(VertexProvider::new(project_id, region, token)))
-        }
-        (ProviderKind::Foundry, ProviderCredentials::Foundry { resource, api_key }) => {
-            Ok(Arc::new(FoundryProvider::new(resource, api_key)))
-        }
-        _ => Err(AppError::Config(format!(
-            "Credential type mismatch for provider {}",
-            kind
-        ))),
-    }
-}

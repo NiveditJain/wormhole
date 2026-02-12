@@ -6,6 +6,7 @@ use secrecy::{ExposeSecret, SecretString};
 use tracing::debug;
 
 use crate::error::ProviderError;
+use crate::provider::builder::http_client;
 use crate::provider::{Provider, SseByteStream};
 use crate::types::ProviderKind;
 
@@ -20,13 +21,7 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(api_key: SecretString, base_url: Option<String>) -> Self {
-        let client = Client::builder()
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .pool_max_idle_per_host(32)
-            .tcp_nodelay(true)
-            .tcp_keepalive(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = http_client();
 
         Self {
             client,

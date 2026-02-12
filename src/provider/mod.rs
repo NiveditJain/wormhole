@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod bedrock;
+pub mod builder;
 pub mod failover;
 pub mod foundry;
 pub mod model_map;
