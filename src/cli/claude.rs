@@ -1,20 +1,22 @@
 use anyhow::{bail, Context, Result};
 use console::style;
-use dialoguer::FuzzySelect;
+use dialoguer::{FuzzySelect, Select};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
+use crate::cli::config_cmd::gather_and_save_credentials;
 use crate::cli::ClaudeArgs;
 use crate::config::credentials::resolve_credentials;
 use crate::config::types::ProviderCredentials;
-use crate::config::WormholeConfig;
+use crate::config::{load_config, WormholeConfig};
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::bedrock::BedrockProvider;
 use crate::provider::failover::FailoverProvider;
 use crate::provider::foundry::FoundryProvider;
+use crate::provider::model_map::available_models;
 use crate::provider::vertex::VertexProvider;
 use crate::provider::Provider;
 use crate::server::state::AppState;
@@ -32,8 +34,12 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
         }
     }
 
-    // Resolve provider
-    let (provider_kind, resumed_session) = resolve_provider_and_session(&args, &config, &session_store)?;
+    // Resolve provider and model
+    let (provider_kind, resumed_session, selected_model) =
+        resolve_provider_and_session(&args, &config, &session_store)?;
+
+    // Use explicitly provided --model, or the interactively selected model
+    let model = args.model.clone().or(selected_model);
 
     // Resolve credentials
     let credentials = resolve_credentials(provider_kind, &config.providers)
@@ -56,7 +62,7 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
     } else {
         let session = SessionState::new(
             provider_kind,
-            args.model.clone(),
+            model.clone(),
             None,
             config.failover.fallback_order.clone(),
         );
@@ -77,7 +83,7 @@ pub async fn run(args: ClaudeArgs, config: WormholeConfig) -> Result<()> {
         .context("Failed to start proxy server")?;
 
     // Print banner
-    print_banner(provider_kind, &session, actual_port, args.model.as_deref());
+    print_banner(provider_kind, &session, actual_port, model.as_deref());
 
     // Spawn Claude Code
     let base_url = format!("http://127.0.0.1:{}", actual_port);
@@ -103,7 +109,7 @@ fn resolve_provider_and_session(
     args: &ClaudeArgs,
     config: &WormholeConfig,
     store: &SessionStore,
-) -> Result<(ProviderKind, Option<SessionState>)> {
+) -> Result<(ProviderKind, Option<SessionState>, Option<String>)> {
     // If --resume is specified, try to resume a session
     if let Some(ref resume_arg) = args.resume {
         let session = match resume_arg {
@@ -120,31 +126,198 @@ fn resolve_provider_and_session(
             session.provider.display_name()
         );
 
-        return Ok((session.provider, Some(session)));
+        return Ok((session.provider, Some(session), None));
     }
 
-    // If --provider is specified, use it
+    // If --provider and --model are both specified, skip all interactive selection
     if let Some(provider) = args.provider {
-        return Ok((provider, None));
+        if let Some(ref model) = args.model {
+            return Ok((provider, None, Some(model.clone())));
+        }
+        // --provider without --model: skip provider picker, show model picker
+        let model = interactive_model_select(provider)?;
+        return Ok((provider, None, model));
     }
 
     // Try default provider from config
     if let Some(default) = config.proxy.default_provider {
-        return Ok((default, None));
+        if let Some(ref model) = args.model {
+            return Ok((default, None, Some(model.clone())));
+        }
+        let model = interactive_model_select(default)?;
+        return Ok((default, None, model));
     }
 
-    // Interactive selection
-    let kinds = ProviderKind::all();
-    let names: Vec<&str> = kinds.iter().map(|p| p.display_name()).collect();
+    // Full interactive flow: provider → model
+    let (provider, model) = interactive_provider_and_model_select(config)?;
+    Ok((provider, None, model))
+}
+
+/// Check whether a provider has credentials configured (in config or env).
+fn is_provider_configured(kind: ProviderKind, config: &WormholeConfig) -> bool {
+    match kind {
+        ProviderKind::Anthropic => {
+            config
+                .providers
+                .anthropic
+                .as_ref()
+                .map_or(false, |c| c.api_key.is_some() || c.api_key_env.is_some())
+                || std::env::var("ANTHROPIC_API_KEY").is_ok()
+        }
+        ProviderKind::Bedrock => {
+            config.providers.bedrock.is_some()
+                || std::env::var("AWS_REGION").is_ok()
+                || std::env::var("AWS_DEFAULT_REGION").is_ok()
+                || std::path::Path::new(&format!(
+                    "{}/.aws/credentials",
+                    std::env::var("HOME").unwrap_or_default()
+                ))
+                .exists()
+        }
+        ProviderKind::Vertex => {
+            config
+                .providers
+                .vertex
+                .as_ref()
+                .map_or(false, |c| c.project_id.is_some())
+                || std::env::var("GOOGLE_CLOUD_PROJECT").is_ok()
+        }
+        ProviderKind::Foundry => {
+            config
+                .providers
+                .foundry
+                .as_ref()
+                .map_or(false, |c| c.api_key.is_some() || c.api_key_env.is_some())
+                || std::env::var("AZURE_FOUNDRY_API_KEY").is_ok()
+        }
+    }
+}
+
+/// Full interactive flow: select a provider, then select a model.
+fn interactive_provider_and_model_select(
+    config: &WormholeConfig,
+) -> Result<(ProviderKind, Option<String>)> {
+    let provider = interactive_provider_select(config)?;
+    let model = interactive_model_select(provider)?;
+    Ok((provider, model))
+}
+
+/// Show an interactive provider picker with configured/unconfigured status
+/// and an "Configure a new provider..." option.
+fn interactive_provider_select(config: &WormholeConfig) -> Result<ProviderKind> {
+    let mut current_config = config.clone();
+
+    loop {
+        let kinds = ProviderKind::all();
+
+        // Build display items
+        let mut items: Vec<String> = Vec::new();
+        let mut configured_kinds: Vec<Option<ProviderKind>> = Vec::new();
+
+        for &kind in kinds {
+            let configured = is_provider_configured(kind, &current_config);
+            let label = if configured {
+                format!("{} {}", style("✓").green().bold(), kind.display_name())
+            } else {
+                format!(
+                    "  {} {}",
+                    kind.display_name(),
+                    style("(not configured)").dim()
+                )
+            };
+            items.push(label);
+            configured_kinds.push(Some(kind));
+        }
+
+        // Separator
+        items.push(format!("{}", style("──────────────────────────────").dim()));
+        configured_kinds.push(None); // separator marker
+
+        // "Configure a new provider..." option
+        items.push(format!(
+            "{} Configure a new provider...",
+            style("+").cyan().bold()
+        ));
+        configured_kinds.push(None); // "add new" marker
+
+        let separator_idx = kinds.len();
+        let add_new_idx = kinds.len() + 1;
+
+        let selection = Select::new()
+            .with_prompt("Select provider")
+            .items(&items)
+            .default(0)
+            .interact()
+            .context("Provider selection cancelled")?;
+
+        // Separator is not a valid selection — re-prompt
+        if selection == separator_idx {
+            continue;
+        }
+
+        // "Configure a new provider..." selected
+        if selection == add_new_idx {
+            let provider_names: Vec<&str> = kinds.iter().map(|p| p.display_name()).collect();
+            let provider_idx = Select::new()
+                .with_prompt("Which provider to configure")
+                .items(&provider_names)
+                .default(0)
+                .interact()
+                .context("Provider type selection cancelled")?;
+
+            let chosen = kinds[provider_idx];
+            println!();
+            gather_and_save_credentials(chosen, None)?;
+            println!();
+
+            // Reload config after saving credentials
+            current_config = load_config();
+            continue;
+        }
+
+        // A provider was selected
+        let chosen = kinds[selection];
+        let configured = is_provider_configured(chosen, &current_config);
+
+        if !configured {
+            // Run inline credential setup
+            println!();
+            println!(
+                "{} {} is not configured. Let's set it up.",
+                style("!").yellow().bold(),
+                chosen.display_name()
+            );
+            println!();
+            gather_and_save_credentials(chosen, None)?;
+            println!();
+
+            // Reload config and restart selection
+            current_config = load_config();
+            continue;
+        }
+
+        return Ok(chosen);
+    }
+}
+
+/// Show an interactive model picker for the given provider using FuzzySelect.
+fn interactive_model_select(provider: ProviderKind) -> Result<Option<String>> {
+    let models = available_models(provider);
+
+    if models.is_empty() {
+        return Ok(None);
+    }
+
+    let display_names: Vec<&str> = models.iter().map(|(_, name)| *name).collect();
 
     let selection = FuzzySelect::new()
-        .with_prompt("Select provider")
-        .items(&names)
+        .with_prompt(format!("Select model ({})", provider.display_name()))
+        .items(&display_names)
         .default(0)
         .interact()
-        .context("Provider selection cancelled")?;
+        .context("Model selection cancelled")?;
 
-    Ok((kinds[selection], None))
+    Ok(Some(models[selection].0.to_string()))
 }
 
 fn build_provider(

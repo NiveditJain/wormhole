@@ -218,6 +218,13 @@ pub fn run_show() -> Result<()> {
 }
 
 pub fn run_set_credentials(provider: ProviderKind, api_key: Option<String>) -> Result<()> {
+    gather_and_save_credentials(provider, api_key)
+}
+
+/// Interactively gather credentials for the given provider and save them to the
+/// config file. This is used by both `wormhole config set-credentials` and the
+/// inline "add provider" flow in `wormhole claude`.
+pub fn gather_and_save_credentials(provider: ProviderKind, api_key: Option<String>) -> Result<()> {
     let config_path = WormholeConfig::config_file_path();
     let config_dir = WormholeConfig::config_dir();
 

@@ -43,6 +43,26 @@ fn anthropic_to_vertex(model: &str) -> String {
     model.to_string()
 }
 
+/// Returns a list of (model_id, display_name) tuples for the given provider.
+/// Model IDs are in the canonical Anthropic format; callers should use
+/// `translate_model_id` when sending requests to non-Anthropic providers.
+pub fn available_models(provider: ProviderKind) -> Vec<(&'static str, &'static str)> {
+    match provider {
+        ProviderKind::Anthropic | ProviderKind::Bedrock | ProviderKind::Vertex => vec![
+            ("claude-opus-4-6", "Claude Opus 4.6"),
+            ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+            ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
+            ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku"),
+        ],
+        ProviderKind::Foundry => vec![
+            ("claude-opus-4-6", "Claude Opus 4.6"),
+            ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
