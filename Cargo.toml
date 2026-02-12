@@ -1,0 +1,77 @@
+[package]
+name = "wormhole"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-cloud provider proxy for Claude Code"
+
+[dependencies]
+# Web framework & HTTP
+axum = { version = "0.8", features = ["macros"] }
+hyper = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1"
+http-body-util = "0.1"
+
+# Runtime & async
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = { version = "0.3", features = ["sink"] }
+async-stream = "0.3"
+async-trait = "0.1"
+bytes = "1"
+pin-project-lite = "0.2"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+dialoguer = { version = "0.11", features = ["fuzzy-select"] }
+console = "0.15"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Config
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Sessions & state
+dashmap = "6"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Security
+secrecy = { version = "0.10", features = ["serde"] }
+
+# AWS
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = "1"
+aws-sigv4 = "1"
+aws-smithy-runtime-api = "1"
+aws-smithy-eventstream = "0.60"
+aws-smithy-types = "1"
+aws-types = "1"
+
+# GCP
+gcp_auth = "0.12"
+
+# Errors
+thiserror = "2"
+anyhow = "1"
+
+# Misc
+base64 = "0.22"
+urlencoding = "2"
+memchr = "2"
+
+[dev-dependencies]
+wiremock = "0.6"
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+tokio-test = "0.4"
