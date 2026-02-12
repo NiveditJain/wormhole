@@ -31,6 +31,8 @@ async fn test_daemon_session_creation() {
         api_key: Some("test-key".to_string()),
         api_key_env: None,
         base_url: Some(mock_server.uri()),
+        default_model: None,
+        name: None,
     });
 
     let state = Arc::new(AppState::new(config, shutdown.clone()));
@@ -134,6 +136,8 @@ async fn test_daemon_multiple_sessions() {
         api_key: Some("key1".to_string()),
         api_key_env: None,
         base_url: Some(mock_server_1.uri()),
+        default_model: None,
+        name: None,
     });
 
     let state = Arc::new(AppState::new(config, shutdown.clone()));

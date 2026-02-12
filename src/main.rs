@@ -57,6 +57,9 @@ async fn main() -> anyhow::Result<()> {
                 cli::config_cmd::run_set_credentials(provider, api_key)?;
             }
         },
+        Command::Add(args) => {
+            cli::config_cmd::run_add(args)?;
+        }
     }
 
     Ok(())

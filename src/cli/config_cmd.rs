@@ -1,9 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use console::style;
 use dialoguer::{Input, Password, Select};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
+use crate::cli::AddArgs;
 use crate::config::{load_config, WormholeConfig};
 use crate::types::ProviderKind;
 
@@ -322,6 +323,196 @@ pub fn gather_and_save_credentials(provider: ProviderKind, api_key: Option<Strin
         style("✓").green().bold(),
         style(provider.display_name()).cyan()
     );
+
+    Ok(())
+}
+
+pub fn run_add(args: AddArgs) -> Result<()> {
+    // Parse positional args: `wormhole add <provider>` or `wormhole add <model> <provider>`
+    let (provider_name, model) = if let Some(ref p) = args.provider {
+        (p.clone(), Some(args.provider_or_model.clone()))
+    } else {
+        (args.provider_or_model.clone(), None)
+    };
+
+    // --model flag; positional model takes precedence
+    let model = model.or(args.model.clone());
+
+    match provider_name.as_str() {
+        "anthropic" | "bedrock" | "vertex" | "foundry" => {
+            let kind = match provider_name.as_str() {
+                "anthropic" => ProviderKind::Anthropic,
+                "bedrock" => ProviderKind::Bedrock,
+                "vertex" => ProviderKind::Vertex,
+                "foundry" => ProviderKind::Foundry,
+                _ => unreachable!(),
+            };
+
+            gather_and_save_credentials(kind, args.api_key.clone())?;
+
+            if let Some(ref model) = model {
+                patch_default_model(&provider_name, model)?;
+                println!(
+                    "{} Default model set to {}",
+                    style("✓").green().bold(),
+                    style(model).cyan()
+                );
+            }
+        }
+        "custom" => {
+            run_add_custom(args.name, args.url, args.api_key, model)?;
+        }
+        other => {
+            bail!(
+                "Unknown provider \"{}\". Use: anthropic, bedrock, vertex, foundry, custom",
+                other
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn run_add_custom(
+    name_flag: Option<String>,
+    url_flag: Option<String>,
+    api_key_flag: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    let config_path = WormholeConfig::config_file_path();
+    let config_dir = WormholeConfig::config_dir();
+
+    fs::create_dir_all(&config_dir)?;
+
+    let name: String = if let Some(n) = name_flag {
+        n
+    } else {
+        Input::new()
+            .with_prompt("Provider name (e.g. openrouter, my-proxy)")
+            .interact_text()?
+    };
+
+    let url: String = if let Some(u) = url_flag {
+        u
+    } else {
+        Input::new()
+            .with_prompt("API base URL")
+            .interact_text()?
+    };
+
+    let api_key: String = if let Some(k) = api_key_flag {
+        k
+    } else {
+        Password::new()
+            .with_prompt("API key")
+            .interact()?
+    };
+
+    let default_model: String = if let Some(m) = model {
+        m
+    } else {
+        Input::new()
+            .with_prompt("Default model")
+            .default("claude-sonnet-4-5-20250929".to_string())
+            .interact_text()?
+    };
+
+    // Read existing config or start fresh
+    let mut config_str = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        String::new()
+    };
+
+    // Remove existing [providers.anthropic] section if present
+    let section_header = "[providers.anthropic]";
+    if let Some(start) = config_str.find(section_header) {
+        let rest = &config_str[start + section_header.len()..];
+        let end = rest
+            .find("\n[")
+            .map(|i| start + section_header.len() + i)
+            .unwrap_or(config_str.len());
+        config_str.replace_range(start..end, "");
+    }
+
+    let section = format!(
+        "\n[providers.anthropic]\napi_key = \"{}\"\nbase_url = \"{}\"\ndefault_model = \"{}\"\nname = \"{}\"\n",
+        api_key, url, default_model, name
+    );
+
+    config_str.push_str(&section);
+
+    fs::write(&config_path, &config_str)?;
+
+    // Set permissions to 600
+    let mut perms = fs::metadata(&config_path)?.permissions();
+    perms.set_mode(0o600);
+    fs::set_permissions(&config_path, perms)?;
+
+    println!(
+        "{} Custom provider {} configured (Anthropic-compatible)",
+        style("✓").green().bold(),
+        style(&name).cyan()
+    );
+    println!(
+        "  {} {}",
+        style("URL:").bold(),
+        style(&url).dim()
+    );
+    println!(
+        "  {} {}",
+        style("Model:").bold(),
+        style(&default_model).dim()
+    );
+
+    Ok(())
+}
+
+/// Patch the config file to add/update `default_model` for a given provider section.
+fn patch_default_model(provider_name: &str, model: &str) -> Result<()> {
+    let config_path = WormholeConfig::config_file_path();
+
+    let mut config_str = if config_path.exists() {
+        fs::read_to_string(&config_path)?
+    } else {
+        return Ok(());
+    };
+
+    let section_header = format!("[providers.{}]", provider_name);
+    if let Some(start) = config_str.find(&section_header) {
+        let section_body_start = start + section_header.len();
+        let rest = &config_str[section_body_start..];
+
+        // Find the end of this section (next section or EOF)
+        let section_end = rest
+            .find("\n[")
+            .map(|i| section_body_start + i)
+            .unwrap_or(config_str.len());
+
+        let section_body = &config_str[section_body_start..section_end];
+
+        // Check if default_model already exists in the section
+        if let Some(dm_offset) = section_body.find("default_model") {
+            // Replace the existing default_model line
+            let abs_dm_start = section_body_start + dm_offset;
+            let line_end = config_str[abs_dm_start..]
+                .find('\n')
+                .map(|i| abs_dm_start + i)
+                .unwrap_or(config_str.len());
+            config_str.replace_range(
+                abs_dm_start..line_end,
+                &format!("default_model = \"{}\"", model),
+            );
+        } else {
+            // Insert default_model after the section header
+            config_str.insert_str(
+                section_body_start,
+                &format!("\ndefault_model = \"{}\"", model),
+            );
+        }
+
+        fs::write(&config_path, &config_str)?;
+    }
 
     Ok(())
 }

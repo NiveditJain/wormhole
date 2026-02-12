@@ -38,6 +38,35 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+
+    /// Add and configure a provider
+    Add(AddArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct AddArgs {
+    /// Provider name (anthropic, bedrock, vertex, foundry, custom) or model
+    /// when followed by a provider name
+    pub provider_or_model: String,
+
+    /// Provider name (when first arg is a model)
+    pub provider: Option<String>,
+
+    /// API key
+    #[arg(long)]
+    pub api_key: Option<String>,
+
+    /// Provider display name (for custom providers)
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// API base URL (for custom providers)
+    #[arg(long)]
+    pub url: Option<String>,
+
+    /// Default model
+    #[arg(long)]
+    pub model: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]

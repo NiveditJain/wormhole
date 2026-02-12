@@ -111,6 +111,10 @@ pub struct AnthropicConfig {
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -120,6 +124,8 @@ pub struct BedrockConfig {
     pub access_key_id: Option<String>,
     pub secret_access_key: Option<String>,
     pub use_global_endpoint: Option<bool>,
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -127,6 +133,8 @@ pub struct VertexConfig {
     pub project_id: Option<String>,
     pub region: Option<String>,
     pub credentials_file: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -134,6 +142,8 @@ pub struct FoundryConfig {
     pub resource: Option<String>,
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

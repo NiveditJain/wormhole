@@ -142,7 +142,10 @@ fn resolve_provider_and_session(
         if let Some(ref model) = args.model {
             return Ok((provider, None, Some(model.clone())));
         }
-        // --provider without --model: skip provider picker, show model picker
+        // --provider without --model: check config for default_model, then model picker
+        if let Some(dm) = get_default_model(provider, config) {
+            return Ok((provider, None, Some(dm)));
+        }
         let model = interactive_model_select(provider)?;
         return Ok((provider, None, model));
     }
@@ -152,6 +155,9 @@ fn resolve_provider_and_session(
         if let Some(ref model) = args.model {
             return Ok((default, None, Some(model.clone())));
         }
+        if let Some(dm) = get_default_model(default, config) {
+            return Ok((default, None, Some(dm)));
+        }
         let model = interactive_model_select(default)?;
         return Ok((default, None, model));
     }
@@ -159,6 +165,16 @@ fn resolve_provider_and_session(
     // Full interactive flow: provider → model
     let (provider, model) = interactive_provider_and_model_select(config)?;
     Ok((provider, None, model))
+}
+
+/// Look up the `default_model` field from a provider's config section.
+fn get_default_model(provider: ProviderKind, config: &WormholeConfig) -> Option<String> {
+    match provider {
+        ProviderKind::Anthropic => config.providers.anthropic.as_ref()?.default_model.clone(),
+        ProviderKind::Bedrock => config.providers.bedrock.as_ref()?.default_model.clone(),
+        ProviderKind::Vertex => config.providers.vertex.as_ref()?.default_model.clone(),
+        ProviderKind::Foundry => config.providers.foundry.as_ref()?.default_model.clone(),
+    }
 }
 
 /// Check whether a provider has credentials configured (in config or env).
