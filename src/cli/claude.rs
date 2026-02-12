@@ -173,14 +173,11 @@ fn is_provider_configured(kind: ProviderKind, config: &WormholeConfig) -> bool {
                 || std::env::var("ANTHROPIC_API_KEY").is_ok()
         }
         ProviderKind::Bedrock => {
+            // Only consider Bedrock configured if the user explicitly set it up
+            // in the wormhole config. Having generic ~/.aws/credentials or
+            // AWS_REGION is not sufficient — those exist on most dev machines
+            // and don't imply Bedrock access.
             config.providers.bedrock.is_some()
-                || std::env::var("AWS_REGION").is_ok()
-                || std::env::var("AWS_DEFAULT_REGION").is_ok()
-                || std::path::Path::new(&format!(
-                    "{}/.aws/credentials",
-                    std::env::var("HOME").unwrap_or_default()
-                ))
-                .exists()
         }
         ProviderKind::Vertex => {
             config
